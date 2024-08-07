@@ -1,7 +1,7 @@
-use std::fs::{read_dir, File};
+use std::fs::File;
 use std::vec;
 
-use crate::operators::{self as OP, silu};
+use crate::operators as ops;
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
 use crate::{config::LlamaConfigJson, operators::rms_norm};
@@ -71,10 +71,10 @@ impl Llama<f32> {
 
         // Computation Starts Here
         // Embedding lookup
-        OP::gather(&mut residual, input, &self.params.embedding_table);
+        ops::gather(&mut residual, input, &self.params.embedding_table);
 
         for layer in 0..self.n_layers {
-            OP::rms_norm(
+            ops::rms_norm(
                 &mut hidden_states,
                 &residual,
                 &self.params.rms_att_w[layer],
@@ -84,15 +84,15 @@ impl Llama<f32> {
             let q = (&mut q_buf).reshape(&vec![seq_len, self.n_q_h * self.dqkv]); // (seq, n_h * dqkv)
             let k = &mut cache.k_cache(layer, past_seq_len); // (seq, n_kv_h * dqkv)
             let v = &mut cache.v_cache(layer, past_seq_len); // (seq, n_kv_h * dqkv)
-            OP::matmul_transb(q, 0., &hidden_states, &self.params.wq[layer], 1.0);
-            OP::matmul_transb(k, 0., &hidden_states, &self.params.wk[layer], 1.0);
-            OP::matmul_transb(v, 0., &hidden_states, &self.params.wv[layer], 1.0);
-            OP::rope(
+            ops::matmul_transb(q, 0., &hidden_states, &self.params.wq[layer], 1.0);
+            ops::matmul_transb(k, 0., &hidden_states, &self.params.wk[layer], 1.0);
+            ops::matmul_transb(v, 0., &hidden_states, &self.params.wv[layer], 1.0);
+            ops::rope(
                 q.reshape(&vec![seq_len, self.n_q_h, self.dqkv]),
                 past_seq_len,
                 self.rope_theta,
             );
-            OP::rope(
+            ops::rope(
                 k.reshape(&vec![seq_len, self.n_kv_h, self.dqkv]),
                 past_seq_len,
                 self.rope_theta,
@@ -113,14 +113,14 @@ impl Llama<f32> {
         let mut hidden_states = hidden_states.slice((seq_len - 1) * self.d, &vec![1, self.d]);
         let residual = residual.slice((seq_len - 1) * self.d, &vec![self.d]);
 
-        OP::rms_norm(
+        ops::rms_norm(
             &mut hidden_states,
             &residual,
             &self.params.rms_out_w,
             self.eps,
         );
 
-        OP::matmul_transb(&mut logits, 0., &hidden_states, &self.params.lm_head, 1.0);
+        ops::matmul_transb(&mut logits, 0., &hidden_states, &self.params.lm_head, 1.0);
 
         logits
     }
@@ -167,10 +167,10 @@ fn mlp(
     rms_w: &Tensor<f32>,
     eps: f32,
 ) {
-    rms_norm(hidden_states, &residual, rms_w, eps);
-    matmul_transb(gate, 0., hidden_states, w_gate, 1.);
-    matmul_transb(up, 0., hidden_states, w_up, 1.);
-    silu(up, &gate);
+    ops::rms_norm(hidden_states, &residual, rms_w, eps);
+    ops::matmul_transb(gate, 0., hidden_states, w_gate, 1.);
+    ops::matmul_transb(up, 0., hidden_states, w_up, 1.);
+    ops::silu(up, &gate);
     matmul_transb(hidden_states, 0., &up, w_down, 1.);
     let residual_ = unsafe { residual.data_mut() };
     let hidden_ = hidden_states.data();
