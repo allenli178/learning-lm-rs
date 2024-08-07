@@ -1,11 +1,11 @@
 use std::fs::File;
 use std::vec;
 
+use crate::config::LlamaConfigJson;
+use crate::kvcache::KVCache;
 use crate::operators as ops;
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
-use crate::{config::LlamaConfigJson, operators::rms_norm};
-use crate::{kvcache::KVCache, operators::matmul_transb};
 use safetensors::SafeTensors;
 use std::path::Path;
 pub struct Llama<T> {
@@ -171,7 +171,7 @@ fn mlp(
     ops::matmul_transb(gate, 0., hidden_states, w_gate, 1.);
     ops::matmul_transb(up, 0., hidden_states, w_up, 1.);
     ops::silu(up, &gate);
-    matmul_transb(hidden_states, 0., &up, w_down, 1.);
+    ops::matmul_transb(hidden_states, 0., &up, w_down, 1.);
     let residual_ = unsafe { residual.data_mut() };
     let hidden_ = hidden_states.data();
     for i in 0..hidden_states.size() {
