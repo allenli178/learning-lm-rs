@@ -1,6 +1,6 @@
 use crate::tensor::Tensor;
 
-// get (row) vectors from a 2D table given a list of indices
+/// get (row) vectors from a 2D table given a list of indices
 pub fn gather(y: &mut Tensor<f32>, indices: &Tensor<u32>, table: &Tensor<f32>) {
     let length = indices.size();
     let table_shape = table.shape();
@@ -14,7 +14,7 @@ pub fn gather(y: &mut Tensor<f32>, indices: &Tensor<u32>, table: &Tensor<f32>) {
     }
 }
 
-// RoPE: Rotary Positional Embedding
+/// RoPE: Rotary Positional Embedding
 pub fn rope(y: &mut Tensor<f32>, start_pos: usize, theta: f32) {
     let shape = y.shape();
     assert!(shape.len() == 3);
@@ -33,6 +33,44 @@ pub fn rope(y: &mut Tensor<f32>, start_pos: usize, theta: f32) {
                 data[tok * n_heads * d + head * d + i] = a * cos - b * sin;
                 data[tok * n_heads * d + head * d + i + d / 2] = b * cos + a * sin;
             }
+        }
+    }
+}
+// x = x + y
+pub fn add(x: &mut Tensor<f32>, y: &Tensor<f32>) {
+    let len = x.size();
+    assert!(len == y.size());
+    assert!(x.shape() == y.shape());
+    let x_ = unsafe { x.data_mut() };
+    let y_ = y.data();
+    for i in 0..len {
+        x_[i] += y_[i];
+    }
+}
+
+// x = softmax(x)
+pub fn softmax(x: &mut Tensor<f32>) {
+    let ndim = x.shape().len();
+    assert!(ndim >= 2);
+    let seq_len = x.shape()[ndim - 2];
+    let total_seq_len = x.shape()[ndim - 1];
+    let batch = x.size() / (seq_len * total_seq_len);
+    let data = unsafe { x.data_mut() };
+    for b in 0..batch {
+        let base = b * seq_len * total_seq_len;
+        for i in 0..seq_len {
+            let offset = base + i * total_seq_len;
+            let max = data[offset..offset + total_seq_len]
+                .iter()
+                .fold(data[offset], |a, b| a.max(*b));
+            let sum = (0..total_seq_len)
+                .map(|j| {
+                    let e = (data[offset + j] - max).exp();
+                    data[offset + j] = e;
+                    e
+                })
+                .sum::<f32>();
+            (0..total_seq_len).for_each(|j| data[offset + j] /= sum);
         }
     }
 }
@@ -70,21 +108,30 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
     }
 }
 
+// rms_norm
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    assert!(y.shape().len() == 2);
-    assert!(x.shape().len() == 2);
-    assert!(y.shape()[0] == x.shape()[0]);
-    assert!(y.shape()[1] == x.shape()[1]);
-    let row = y.shape()[0];
-    let col = y.shape()[1];
-    let w_ = w.data();
-    let y_ = unsafe { y.data_mut() };
-    for i in 0..row {
-        let xi_slice = x.slice(i * col, &vec![x.shape()[1]]);
-        let xi_ = xi_slice.data();
-        let rms = (xi_.iter().fold(0.0, |acc, xj| acc + xj * xj) / col as f32 + epsilon).sqrt();
-        for j in 0..col {
-            y_[i * col + j] = x.data()[i * col + j] * w_[j] / rms;
+    let shape = y.shape().clone();
+    let len = shape.len();
+    let last_dim = len - 1;
+    let _y = unsafe { y.data_mut() };
+    let _x = x.data();
+    let _w = w.data();
+
+    let mut ext_loop = 1;
+    for i in 0..(shape.len() - 1) {
+        ext_loop *= shape[i];
+    }
+    let inner_size = shape[last_dim];
+
+    for i in 0..ext_loop {
+        let mut xp = 0.0;
+        for j in 0..shape[last_dim] {
+            xp = xp + _x[i * inner_size + j] * _x[i * inner_size + j];
+            _y[i * inner_size + j] = _w[j] * _x[i * inner_size + j];
+        }
+        xp = (xp / inner_size as f32 + epsilon).sqrt();
+        for j in 0..shape[last_dim] {
+            _y[i * inner_size + j] = _y[i * inner_size + j] / xp;
         }
     }
 }
@@ -96,7 +143,6 @@ pub fn silu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
     fn sigmoid(x: f32) -> f32 {
         1.0 / (1.0 + (-x).exp())
     }
-
     let len = y.size();
     assert!(len == x.size());
     let y_ = unsafe { y.data_mut() };
@@ -105,6 +151,24 @@ pub fn silu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
         let s = sigmoid(x_[i]);
         y_[i] *= s * x_[i];
     }
+}
+
+pub fn silu_with_return(y: &Tensor<f32>, x: &Tensor<f32>) -> Tensor<f32> {
+    let mut res = Tensor::default(y.shape());
+    #[inline]
+    fn sigmoid(x: f32) -> f32 {
+        1.0 / (1.0 + (-x).exp())
+    }
+    let len = y.size();
+    assert!(len == x.size());
+    let y_ = y.data();
+    let x_ = x.data();
+    let res_ = unsafe { res.data_mut() };
+    for i in 0..len {
+        let s = sigmoid(x_[i]);
+        res_[i] = s * x_[i] * y_[i];
+    }
+    res
 }
 
 // C = beta * C + alpha * A @ B^T
